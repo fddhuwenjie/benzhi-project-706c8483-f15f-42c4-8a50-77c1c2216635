@@ -239,7 +239,19 @@ type ExecutionSummary struct {
 
 type materialBatchCache struct {
 	fingerprint string
-	items       []MaterialBatchSummary
+	items      []MaterialBatchSummary
+}
+
+// cloneMaterialBatchSummary returns a deep copy of item so callers cannot mutate
+// the slice-backed fields (Operators, QuantityValues, ExecutionIDs,
+// PlanVersions) shared with the cached summary.
+func cloneMaterialBatchSummary(item MaterialBatchSummary) MaterialBatchSummary {
+	clone := item
+	clone.Operators = append([]string(nil), item.Operators...)
+	clone.QuantityValues = append([]any(nil), item.QuantityValues...)
+	clone.ExecutionIDs = append([]string(nil), item.ExecutionIDs...)
+	clone.PlanVersions = append([]int(nil), item.PlanVersions...)
+	return clone
 }
 
 func (s *Service) MaterialBatchTracking(batch string) ([]MaterialBatchSummary, error) {
@@ -268,7 +280,10 @@ func (s *Service) MaterialBatchTracking(batch string) ([]MaterialBatchSummary, e
 		}
 		s.materialCache = materialBatchCache{fingerprint: version.String(), items: all}
 	}
-	items := append([]MaterialBatchSummary(nil), s.materialCache.items...)
+	items := make([]MaterialBatchSummary, len(s.materialCache.items))
+	for i, item := range s.materialCache.items {
+		items[i] = cloneMaterialBatchSummary(item)
+	}
 	if strings.TrimSpace(batch) == "" {
 		return items, nil
 	}

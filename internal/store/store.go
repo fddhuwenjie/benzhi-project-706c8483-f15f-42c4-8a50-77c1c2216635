@@ -243,6 +243,7 @@ func (s *Store) Create(m Mutation, incident *EnvironmentIncident) (*EnvironmentI
 		return nil, false, err
 	}
 	s.state = next
+	delete(s.evidenceCache, copyIncident.IncidentID)
 	result, err := cloneIncident(copyIncident)
 	return result, false, err
 }
@@ -300,6 +301,7 @@ func (s *Store) Update(m Mutation, mutate MutateFunc) (*EnvironmentIncident, boo
 		return nil, false, err
 	}
 	s.state = next
+	delete(s.evidenceCache, m.IncidentID)
 	result, err := cloneIncident(working)
 	return result, false, err
 }

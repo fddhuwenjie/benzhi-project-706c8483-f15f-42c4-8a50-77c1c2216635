@@ -196,13 +196,21 @@ func (s *Service) PlanPreflight(id string, input SubmitPlanInput) (PlanPreflight
 		return PlanPreflightView{}, &Error{Code: "PRECONDITION_FAILED", Message: "expected_revision 已过期"}
 	}
 	out := PlanPreflightView{Version: int(in.Revision), Passed: true, Summary: map[string]any{"risk_level": in.RiskLevel, "sensitivity": in.Sensitivity}}
-	deps := rules.ValidatePlanDependencies(rules.PlanDependencyInput{Steps: input.Steps, Dependencies: input.Dependencies, IsolationRequired: input.IsolationRequired})
-	out.Failures = append(out.Failures, deps...)
-	if input.SafetyEnvelope == nil {
-		out.Failures = append(out.Failures, "必须提供 safety_envelope")
-	} else {
-		out.Failures = append(out.Failures, rules.ValidateSafetyEnvelope(toRuleSafety(*input.SafetyEnvelope), rules.Sensitivity(in.Sensitivity), rules.RiskLevel(in.RiskLevel))...)
+	// Mirror the precondition gates enforced by SubmitPlan so preflight cannot
+	// report a plan as submittable when SubmitPlan would reject it for state.
+	if input.PreflightVersion != 0 && input.PreflightVersion != int(in.Revision) {
+		out.Failures = append(out.Failures, "方案预检版本已过期，必须重新预检")
 	}
+	if in.Status != store.StatusInspected && !(in.Status == store.StatusPlanSubmitted && in.Plan != nil && in.Plan.ReviewStatus == "rejected") {
+		out.Failures = append(out.Failures, "当前状态不允许提交干预方案")
+	}
+	// Reuse the exact field-level checks that SubmitPlan runs inside its
+	// mutation callback, including the empty-steps gate, inspection readiness
+	// and resubmission rules.
+	out.Failures = append(out.Failures, planSubmissionFailures(in, input)...)
+	// Surface detailed safety-envelope change diagnostics for callers that
+	// want to pre-populate safety_change_notes; these do not add failures
+	// beyond what planSubmissionFailures already reports.
 	if in.Plan != nil && in.Plan.SafetyEnvelope != nil && input.SafetyEnvelope != nil {
 		old, new := *in.Plan.SafetyEnvelope, *input.SafetyEnvelope
 		checks := []struct {
@@ -217,9 +225,6 @@ func (s *Service) PlanPreflight(id string, input SubmitPlanInput) (PlanPreflight
 				}
 			}
 		}
-	}
-	if len(out.SafetyChangeNotesRequired) > 0 {
-		out.Failures = append(out.Failures, "安全包络变更必须填写 safety_change_notes")
 	}
 	out.Passed = len(out.Failures) == 0
 	return out, nil

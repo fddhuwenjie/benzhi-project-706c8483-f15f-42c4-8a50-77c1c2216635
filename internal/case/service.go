@@ -562,6 +562,89 @@ type SubmitPlanInput struct {
 	PreflightVersion      int                          `json:"preflight_version,omitempty"`
 }
 
+// planSubmissionFailures reproduces every validation rule enforced by the
+// submit-plan mutation callback so that PlanPreflight can detect the same
+// rejections before callers attempt to submit. It must stay in sync with the
+// failure paths in SubmitPlan; changes there must be mirrored here.
+func planSubmissionFailures(incident *store.EnvironmentIncident, input SubmitPlanInput) []string {
+	failures := rules.ValidatePlan(rules.PlanInput{Steps: input.Steps, TemperatureTarget: toRuleRange(input.TargetTemperature), HumidityTarget: toRuleRange(input.TargetHumidity), IsolationRequired: input.IsolationRequired, IsolationRecorded: incident.Inspection != nil && incident.Inspection.IsolationMeasure != "", RiskLevel: rules.RiskLevel(incident.RiskLevel)})
+	failures = append(failures, rules.ValidatePlanDependencies(rules.PlanDependencyInput{Steps: input.Steps, Dependencies: input.Dependencies, IsolationRequired: input.IsolationRequired})...)
+	if incident.Inspection == nil {
+		failures = append(failures, "缺少现场原因假设")
+	} else {
+		hasSupported := false
+		allPending := len(incident.Inspection.Hypotheses) > 0
+		for _, hypothesis := range incident.Inspection.Hypotheses {
+			if hypothesis.CurrentConclusion == "supported" || hypothesis.CurrentConclusion == "confirmed" {
+				hasSupported = true
+			}
+			if hypothesis.CurrentConclusion != "pending" {
+				allPending = false
+			}
+		}
+		if !hasSupported && (!allPending || strings.TrimSpace(incident.Inspection.AlternativeMonitoring) == "" || incident.Inspection.AlternativeReviewAt == nil) {
+			failures = append(failures, "尚无已支持原因；仅在全部原因待验证且已记录替代监测安排和复查时间时可继续")
+		}
+		if !incident.Inspection.SensorTrustworthy && len(incident.SensorHandovers) == 0 {
+			failures = append(failures, "独立读数不可采纳且尚未完成可信传感器交接")
+		}
+		if strings.TrimSpace(incident.Inspection.IsolationMeasure) == "" {
+			failures = append(failures, "缺少临时隔离措施")
+		}
+	}
+	if input.SafetyEnvelope == nil {
+		failures = append(failures, "必须提供 safety_envelope")
+	} else {
+		failures = append(failures, rules.ValidateSafetyEnvelope(toRuleSafety(*input.SafetyEnvelope), rules.Sensitivity(incident.Sensitivity), rules.RiskLevel(incident.RiskLevel))...)
+	}
+	for parameter, explanation := range input.SafetyChangeNotes {
+		if strings.TrimSpace(parameter) == "" || strings.TrimSpace(explanation) == "" {
+			failures = append(failures, "safety_change_notes 的参数名和变化说明不能为空")
+		}
+	}
+	version := len(incident.PlanVersions) + 1
+	if version > 1 {
+		previous := incident.PlanVersions[len(incident.PlanVersions)-1]
+		if previous.ReviewStatus != "rejected" || input.BaseVersion != previous.Version {
+			failures = append(failures, "重提方案必须引用最新被退回版本")
+		} else {
+			resolved := map[string]bool{}
+			duplicate := false
+			for _, item := range input.CorrectionResolutions {
+				if _, exists := resolved[item.RequirementID]; exists {
+					duplicate = true
+				}
+				if strings.TrimSpace(item.Resolution) != "" && strings.TrimSpace(item.Evidence) != "" && item.Resolved {
+					resolved[item.RequirementID] = true
+				} else {
+					resolved[item.RequirementID] = false
+				}
+			}
+			if duplicate {
+				failures = append(failures, "修正要求处理说明不能重复")
+			}
+			var missing []string
+			for _, requirement := range previous.CorrectionRequirements {
+				if !resolved[requirement.RequirementID] {
+					missing = append(missing, requirement.Description)
+				}
+			}
+			if len(missing) > 0 {
+				failures = append(failures, "重提方案遗漏未解决修正要求："+strings.Join(missing, "；"))
+			}
+			if len(input.Steps) > len(previous.Steps) {
+				failures = append(failures, "重提方案不得新增未审查步骤")
+			}
+			if input.SafetyEnvelope != nil && previous.SafetyEnvelope != nil && len(input.SafetyChangeNotes) == 0 && fmt.Sprintf("%+v", *input.SafetyEnvelope) != fmt.Sprintf("%+v", *previous.SafetyEnvelope) {
+				failures = append(failures, "重提版本修改安全包络时必须逐项说明 safety_change_notes")
+			}
+		}
+	} else if input.BaseVersion != 0 {
+		failures = append(failures, "首版方案的 base_version 必须为 0")
+	}
+	return failures
+}
+
 func (s *Service) SubmitPlan(incidentID string, input SubmitPlanInput) (*store.EnvironmentIncident, bool, error) {
 	if err := validateMeta(input.Meta, true); err != nil {
 		return nil, false, err
@@ -574,67 +657,19 @@ func (s *Service) SubmitPlan(incidentID string, input SubmitPlanInput) (*store.E
 		if incident.Status != store.StatusInspected && !(incident.Status == store.StatusPlanSubmitted && incident.Plan != nil && incident.Plan.ReviewStatus == "rejected") {
 			return precondition("当前状态不允许提交干预方案")
 		}
-		failures := rules.ValidatePlan(rules.PlanInput{Steps: input.Steps, TemperatureTarget: toRuleRange(input.TargetTemperature), HumidityTarget: toRuleRange(input.TargetHumidity), IsolationRequired: input.IsolationRequired, IsolationRecorded: incident.Inspection != nil && incident.Inspection.IsolationMeasure != "", RiskLevel: rules.RiskLevel(incident.RiskLevel)})
-		failures = append(failures, rules.ValidatePlanDependencies(rules.PlanDependencyInput{Steps: input.Steps, Dependencies: input.Dependencies, IsolationRequired: input.IsolationRequired})...)
-		if incident.Inspection == nil {
-			failures = append(failures, "缺少现场原因假设")
-		} else {
-			hasSupported := false
-			allPending := len(incident.Inspection.Hypotheses) > 0
-			for _, hypothesis := range incident.Inspection.Hypotheses {
-				if hypothesis.CurrentConclusion == "supported" || hypothesis.CurrentConclusion == "confirmed" {
-					hasSupported = true
-				}
-				if hypothesis.CurrentConclusion != "pending" {
-					allPending = false
-				}
-			}
-			if !hasSupported && (!allPending || strings.TrimSpace(incident.Inspection.AlternativeMonitoring) == "" || incident.Inspection.AlternativeReviewAt == nil) {
-				failures = append(failures, "尚无已支持原因；仅在全部原因待验证且已记录替代监测安排和复查时间时可继续")
-			}
-			if !incident.Inspection.SensorTrustworthy && len(incident.SensorHandovers) == 0 {
-				failures = append(failures, "独立读数不可采纳且尚未完成可信传感器交接")
-			}
-			if strings.TrimSpace(incident.Inspection.IsolationMeasure) == "" {
-				failures = append(failures, "缺少临时隔离措施")
-			}
-		}
-		if input.SafetyEnvelope != nil {
-			failures = append(failures, rules.ValidateSafetyEnvelope(toRuleSafety(*input.SafetyEnvelope), rules.Sensitivity(incident.Sensitivity), rules.RiskLevel(incident.RiskLevel))...)
-		}
-		for parameter, explanation := range input.SafetyChangeNotes {
-			if strings.TrimSpace(parameter) == "" || strings.TrimSpace(explanation) == "" {
-				failures = append(failures, "safety_change_notes 的参数名和变化说明不能为空")
-			}
-		}
+		failures := planSubmissionFailures(incident, input)
 		if len(failures) > 0 {
 			return invalid(strings.Join(failures, "；"))
 		}
 		version := len(incident.PlanVersions) + 1
 		if version > 1 {
-			previous := incident.PlanVersions[len(incident.PlanVersions)-1]
-			if previous.ReviewStatus != "rejected" || input.BaseVersion != previous.Version {
-				return precondition("重提方案必须引用最新被退回版本")
-			}
 			resolved := map[string]bool{}
 			for _, item := range input.CorrectionResolutions {
-				if _, exists := resolved[item.RequirementID]; exists {
-					return invalid("修正要求处理说明不能重复")
-				}
 				if strings.TrimSpace(item.Resolution) != "" && strings.TrimSpace(item.Evidence) != "" && item.Resolved {
 					resolved[item.RequirementID] = true
 				} else {
 					resolved[item.RequirementID] = false
 				}
-			}
-			var missing []string
-			for _, requirement := range previous.CorrectionRequirements {
-				if !resolved[requirement.RequirementID] {
-					missing = append(missing, requirement.Description)
-				}
-			}
-			if len(missing) > 0 {
-				return precondition("重提方案遗漏未解决修正要求：" + strings.Join(missing, "；"))
 			}
 			for i := range incident.PlanVersions[len(incident.PlanVersions)-1].CorrectionRequirements {
 				requirement := &incident.PlanVersions[len(incident.PlanVersions)-1].CorrectionRequirements[i]
@@ -644,14 +679,6 @@ func (s *Service) SubmitPlan(incidentID string, input SubmitPlanInput) (*store.E
 				}
 			}
 			incident.Plan = &incident.PlanVersions[len(incident.PlanVersions)-1]
-			if len(input.Steps) > len(previous.Steps) {
-				return precondition("重提方案不得新增未审查步骤")
-			}
-			if input.SafetyEnvelope != nil && previous.SafetyEnvelope != nil && len(input.SafetyChangeNotes) == 0 && fmt.Sprintf("%+v", *input.SafetyEnvelope) != fmt.Sprintf("%+v", *previous.SafetyEnvelope) {
-				return invalid("重提版本修改安全包络时必须逐项说明 safety_change_notes")
-			}
-		} else if input.BaseVersion != 0 {
-			return invalid("首版方案的 base_version 必须为 0")
 		}
 		plan := store.InterventionPlan{PlanID: s.id("plan"), IncidentID: incidentID, Steps: nonBlank(input.Steps), TargetTemperatureRange: input.TargetTemperature, TargetHumidityRange: input.TargetHumidity, IsolationRequired: input.IsolationRequired, SubmittedBy: input.Meta.ActorID, SubmittedAt: now, ReviewStatus: "pending", Version: version, BaseVersion: input.BaseVersion, CorrectionResolutions: input.CorrectionResolutions, SafetyEnvelope: input.SafetyEnvelope, SafetyChangeNotes: input.SafetyChangeNotes, PreflightVersion: input.PreflightVersion, PreflightPassed: input.PreflightVersion > 0, PreflightSummary: fmt.Sprintf("dependencies=%d", len(input.Dependencies))}
 		incident.PlanVersions = append(incident.PlanVersions, plan)

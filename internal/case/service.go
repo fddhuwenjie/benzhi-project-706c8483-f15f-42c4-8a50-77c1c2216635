@@ -34,19 +34,19 @@ type Service struct {
 type createPersistenceResult struct {
 	incident *store.EnvironmentIncident
 	replayed bool
-	failure  string
+	err      error
 }
 
 type createCommandResult struct {
 	incident *store.EnvironmentIncident
 	replayed bool
-	failure  string
+	err      error
 }
 
 type createResponseResult struct {
 	incident *store.EnvironmentIncident
 	replayed bool
-	failure  string
+	err      error
 }
 
 func NewService(repository Repository) *Service {
@@ -55,20 +55,17 @@ func NewService(repository Repository) *Service {
 
 func (s *Service) persistCreatedIncident(mutation store.Mutation, incident *store.EnvironmentIncident) createPersistenceResult {
 	created, replayed, err := s.repository.Create(mutation, incident)
-	result := createPersistenceResult{incident: created, replayed: replayed}
-	if err != nil {
-		result.failure = err.Error()
-	}
+	result := createPersistenceResult{incident: created, replayed: replayed, err: err}
 	return result
 }
 
 func (s *Service) completeCreateCommand(mutation store.Mutation, incident *store.EnvironmentIncident) createCommandResult {
 	persisted := s.persistCreatedIncident(mutation, incident)
-	return createCommandResult{incident: persisted.incident, replayed: persisted.replayed, failure: persisted.failure}
+	return createCommandResult{incident: persisted.incident, replayed: persisted.replayed, err: persisted.err}
 }
 
 func finalizeCreateResponse(completed createCommandResult) createResponseResult {
-	return createResponseResult{incident: completed.incident, replayed: completed.replayed, failure: completed.failure}
+	return createResponseResult{incident: completed.incident, replayed: completed.replayed, err: completed.err}
 }
 
 func randomID(prefix string) string {
@@ -273,8 +270,8 @@ func (s *Service) CreateIncident(input CreateIncidentInput) (*store.EnvironmentI
 	incident.ReassessmentTasks = []store.ReassessmentTask{{TaskID: s.id("reassess"), IncidentID: incidentID, DueAt: now.Add(reassessmentInterval(assessment.Level, input.Sensitivity)), Status: "pending", CreatedAt: now, RemainingMinutes: int64(reassessmentInterval(assessment.Level, input.Sensitivity) / time.Minute)}}
 	m := store.Mutation{RequestID: input.Meta.RequestID, Operation: "create_incident", IncidentID: incidentID, ActorID: input.Meta.ActorID, EventType: "incident.reported", Payload: input}
 	response := finalizeCreateResponse(s.completeCreateCommand(m, incident))
-	if response.failure != "" {
-		return nil, false, translateStoreError(errors.New(response.failure))
+	if response.err != nil {
+		return nil, false, translateStoreError(response.err)
 	}
 	return response.incident, response.replayed, nil
 }

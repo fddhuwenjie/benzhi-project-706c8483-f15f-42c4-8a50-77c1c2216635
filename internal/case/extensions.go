@@ -603,6 +603,60 @@ type recoveryProgressCacheKey struct {
 	Policy     string
 }
 
+// recoverySamplingStatus computes the at-dependent sampling status from the
+// (at-independent) next sample due time and the evaluation moment.
+func recoverySamplingStatus(nextSampleDueAt *time.Time, at time.Time) string {
+	if nextSampleDueAt == nil {
+		return "not_scheduled"
+	}
+	if at.After(*nextSampleDueAt) {
+		return "overdue"
+	}
+	return "on_time"
+}
+
+// cloneRecoveryProgressView produces an isolated deep copy of the view so that
+// caller mutations to returned slices or pointers cannot pollute the cached
+// entry and vice versa.
+func cloneRecoveryProgressView(v RecoveryProgressView) RecoveryProgressView {
+	out := v
+	if len(v.Segments) > 0 {
+		out.Segments = make([]ObservationSegmentView, len(v.Segments))
+		copy(out.Segments, v.Segments)
+	}
+	if len(v.Interruptions) > 0 {
+		out.Interruptions = make([]ObservationInterruption, len(v.Interruptions))
+		copy(out.Interruptions, v.Interruptions)
+		for i := range out.Interruptions {
+			if v.Interruptions[i].PreviousAt != nil {
+				t := *v.Interruptions[i].PreviousAt
+				out.Interruptions[i].PreviousAt = &t
+			}
+		}
+	}
+	if v.NextSampleDueAt != nil {
+		t := *v.NextSampleDueAt
+		out.NextSampleDueAt = &t
+	}
+	if v.EarliestVerificationAt != nil {
+		t := *v.EarliestVerificationAt
+		out.EarliestVerificationAt = &t
+	}
+	if v.Progress.EarliestVerificationAt != nil {
+		t := *v.Progress.EarliestVerificationAt
+		out.Progress.EarliestVerificationAt = &t
+	}
+	if v.Progress.SegmentStartedAt != nil {
+		t := *v.Progress.SegmentStartedAt
+		out.Progress.SegmentStartedAt = &t
+	}
+	if v.Progress.SegmentEndedAt != nil {
+		t := *v.Progress.SegmentEndedAt
+		out.Progress.SegmentEndedAt = &t
+	}
+	return out
+}
+
 func (s *Service) RecoveryProgressAt(incidentID string, at time.Time) (RecoveryProgressView, error) {
 	incident, err := s.Get(incidentID)
 	if err != nil {
@@ -620,7 +674,10 @@ func (s *Service) RecoveryProgressAt(incidentID string, at time.Time) (RecoveryP
 	s.recoveryProgressMu.Lock()
 	if cached, ok := s.recoveryProgressCache[cacheKey]; ok {
 		s.recoveryProgressMu.Unlock()
-		return cached, nil
+		view := cloneRecoveryProgressView(cached)
+		view.Policy.GeneratedAt = at
+		view.SamplingStatus = recoverySamplingStatus(view.NextSampleDueAt, at)
+		return view, nil
 	}
 	s.recoveryProgressMu.Unlock()
 	snapshot := store.RecoveryPolicySnapshot{Version: version, MinimumStableMinutes: int64(policy.MinimumStableDuration / time.Minute), MinimumReadings: policy.MinimumReadings, MaximumGapMinutes: int64(policy.MaximumGap / time.Minute), GeneratedAt: at}
@@ -641,11 +698,6 @@ func (s *Service) RecoveryProgressAt(incidentID string, at time.Time) (RecoveryP
 	if latest != nil {
 		due := latest.CapturedAt.Add(policy.MaximumGap)
 		view.NextSampleDueAt = &due
-		if at.After(due) {
-			view.SamplingStatus = "overdue"
-		} else {
-			view.SamplingStatus = "on_time"
-		}
 	}
 	segments := map[string]*ObservationSegmentView{}
 	var previous *store.EnvironmentReading
@@ -703,8 +755,9 @@ func (s *Service) RecoveryProgressAt(incidentID string, at time.Time) (RecoveryP
 		view.Segments = append(view.Segments, *seg)
 	}
 	sort.Slice(view.Segments, func(i, j int) bool { return view.Segments[i].Segment < view.Segments[j].Segment })
+	view.SamplingStatus = recoverySamplingStatus(view.NextSampleDueAt, at)
 	s.recoveryProgressMu.Lock()
-	s.recoveryProgressCache[cacheKey] = view
+	s.recoveryProgressCache[cacheKey] = cloneRecoveryProgressView(view)
 	s.recoveryProgressMu.Unlock()
 	return view, nil
 }

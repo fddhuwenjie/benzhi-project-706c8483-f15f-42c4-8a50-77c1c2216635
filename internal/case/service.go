@@ -1485,9 +1485,39 @@ func (s *Service) TimelinePage(id string, query TimelineQuery) (TimelinePage, er
 
 func cloneTimelinePage(value TimelinePage) TimelinePage {
 	result := value
-	result.Events = append([]store.AuditEvent(nil), value.Events...)
+	result.Events = make([]store.AuditEvent, len(value.Events))
+	for i := range value.Events {
+		result.Events[i] = value.Events[i]
+		result.Events[i].Details = cloneDetails(value.Events[i].Details)
+	}
 	result.EvidenceGaps = append([]string(nil), value.EvidenceGaps...)
 	return result
+}
+
+func cloneDetails(details map[string]any) map[string]any {
+	if details == nil {
+		return nil
+	}
+	clone := make(map[string]any, len(details))
+	for key, value := range details {
+		clone[key] = cloneDetailValue(value)
+	}
+	return clone
+}
+
+func cloneDetailValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return cloneDetails(v)
+	case []any:
+		clone := make([]any, len(v))
+		for i := range v {
+			clone[i] = cloneDetailValue(v[i])
+		}
+		return clone
+	default:
+		return v
+	}
 }
 
 func eventLabel(eventType string) string {

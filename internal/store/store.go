@@ -378,10 +378,12 @@ func enrichAuditDetails(event *AuditEvent, incident *EnvironmentIncident) {
 				}
 			}
 		}
-	case "deadline.acknowledged", "deadline.commitment_completed":
+	case "deadline.acknowledged", "deadline.commitment_completed", "deadline.commitment_expired", "deadline.commitment_renewed":
 		if len(incident.DeadlineCommitments) > 0 {
 			event.Details["commitment"] = incident.DeadlineCommitments[len(incident.DeadlineCommitments)-1]
 			event.Details["original_response_deadline"] = incident.OriginalResponseDeadline
+			event.Details["escalation_status"] = incident.EscalationStatus
+			event.Details["remaining_minutes"] = incident.RemainingMinutes
 		}
 	case "sensor.handed_over":
 		if len(incident.SensorHandovers) > 0 {

@@ -370,7 +370,8 @@ func (s *Service) ExpireCommitment(id, cid string, in ExpireInput) (*store.Envir
 				c.InvalidatedAt = &now
 				c.Status = "expired"
 				c.OwnerID = ""
-				x.CommitmentOwnerID = ""
+				updated := rules.AssessEscalation(x.ResponseDeadline, now, x.Status == store.StatusSealed, activeDeadlineCommitment(x, now) != nil)
+				x.EscalationStatus, x.RemainingMinutes, x.CommitmentOwnerID = store.EscalationStatus(updated.Status), updated.RemainingMinutes, ""
 				return nil
 			}
 		}
@@ -404,7 +405,8 @@ func (s *Service) RenewCommitment(id, cid string, in RenewInput) (*store.Environ
 				c.NextAction = strings.TrimSpace(in.NextAction)
 				c.CommitmentDueAt = in.CommitmentDueAt.UTC()
 				c.CommittedAt = now
-				x.CommitmentOwnerID = c.OwnerID
+				updated := rules.AssessEscalation(x.ResponseDeadline, now, x.Status == store.StatusSealed, activeDeadlineCommitment(x, now) != nil)
+				x.EscalationStatus, x.RemainingMinutes, x.CommitmentOwnerID = store.EscalationStatus(updated.Status), updated.RemainingMinutes, c.OwnerID
 				return nil
 			}
 		}

@@ -1287,6 +1287,8 @@ func (s *Service) Get(incidentID string) (*store.EnvironmentIncident, error) {
 	result.RemainingMinutes = assessment.RemainingMinutes
 	if commitment != nil {
 		result.CommitmentOwnerID = commitment.OwnerID
+	} else {
+		result.CommitmentOwnerID = ""
 	}
 	return result, nil
 }
@@ -1467,7 +1469,7 @@ func (s *Service) TimelinePage(id string, query TimelineQuery) (TimelinePage, er
 }
 
 func eventLabel(eventType string) string {
-	labels := map[string]string{"incident.reported": "异常登记", "incident.readings_appended": "补充发现读数", "inspection.recorded": "现场复核", "sensor.handed_over": "传感器交接", "plan.submitted": "方案提交", "plan.approved": "方案审核通过", "plan.rejected": "方案退回", "intervention.executed": "干预执行", "intervention.supplemented": "补充干预执行", "recovery.observed": "恢复观察", "recovery.verified": "恢复验证", "reopen.held": "重新开放暂缓", "reopen.hold_requirement_resolved": "补证要求解决", "reopen.hold_renewed": "暂缓期限续期", "incident.sealed": "重新开放签署"}
+	labels := map[string]string{"incident.reported": "异常登记", "incident.readings_appended": "补充发现读数", "inspection.recorded": "现场复核", "sensor.handed_over": "传感器交接", "plan.submitted": "方案提交", "plan.approved": "方案审核通过", "plan.rejected": "方案退回", "intervention.executed": "干预执行", "intervention.supplemented": "补充干预执行", "recovery.observed": "恢复观察", "recovery.verified": "恢复验证", "reopen.held": "重新开放暂缓", "reopen.hold_requirement_resolved": "补证要求解决", "reopen.hold_renewed": "暂缓期限续期", "deadline.acknowledged": "处置时限确认", "deadline.commitment_completed": "处置承诺完成", "deadline.commitment_expired": "处置承诺过期", "deadline.commitment_renewed": "处置承诺续期", "incident.sealed": "重新开放签署"}
 	if value := labels[eventType]; value != "" {
 		return value
 	}
